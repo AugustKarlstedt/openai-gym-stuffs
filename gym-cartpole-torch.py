@@ -42,13 +42,14 @@ lr = 1e-2
 opt = optim.Adam(n.parameters(), lr=lr)
 batch_size = 4096
 epochs = 32
-render = True
+render = False
 
 for i in range(epochs):
     print(f"Epoch {i} of {epochs}: {i/epochs*100:.2f}% ", end="")
 
     batch_observations = []
     batch_actions = []
+    batch_log_probs = []
     batch_weights = []
     batch_episode_returns = []
     batch_episode_lengths = []
@@ -64,10 +65,15 @@ for i in range(epochs):
         batch_observations.append(observation)
 
         n.eval()
-        with torch.no_grad():
-            logits = n(torch.from_numpy(observation).type(torch.FloatTensor))
+        # since we're storing the log_probs at this point, we need the gradients
+        #with torch.no_grad():
+        logits = n(torch.FloatTensor(observation).view(1, -1))
+        
         d = dist.Categorical(logits=logits)
         action = d.sample()
+        
+        log_prob = d.log_prob(action)
+        batch_log_probs.append(log_prob)
 
         observation, reward, done, info = env.step(action.item())
 
@@ -93,8 +99,9 @@ for i in range(epochs):
     n.train()
     opt.zero_grad()
 
-    logits = n(torch.as_tensor(batch_observations).type(torch.FloatTensor))
-    loss = -torch.mean(torch.FloatTensor(batch_weights) * dist.Categorical(logits=logits).log_prob(torch.IntTensor(batch_actions)))
+    batch_loss = torch.cat(batch_log_probs) * torch.Tensor(batch_weights)
+    loss = -batch_loss.mean()
+
     print(f" loss: {loss:.2f} return: {np.mean(batch_episode_returns):.2f} episode length: {np.mean(batch_episode_lengths):.2f}")
     loss.backward()
 

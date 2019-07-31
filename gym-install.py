@@ -1,15 +1,21 @@
 import gym
-env = gym.make('LunarLander-v2')
+
+base = 5
+env = gym.make('Copy-v0', base=base)
 env.reset()
 
 for _ in range(1000):
     env.render()
-    observation, reward, done, info = env.step(env.action_space.sample()) # take a random action
 
-    cart_position = observation[0]
-    cart_velocity = observation[1]
-    pole_angle = observation[2]
-    pole_velocity_at_tip = observation[3]
+    action = env.action_space.sample() # take a random action
+
+    # 1. Move read head left or right (or up/down)
+    # 2. Write or not
+    # 3. Which character to write. (Ignored if should_write=0)
+
+    input_action, output_action, prediction = action
+
+    observation, reward, done, info = env.step(action)
 
     print(f"{observation} {reward} {done} {info}")
 

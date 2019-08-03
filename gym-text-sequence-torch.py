@@ -1,3 +1,4 @@
+import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd
 import numpy as np
@@ -39,25 +40,14 @@ class SimplePolicyGradient(torch.nn.Module):
         self.c_0 = torch.zeros(1, 256)
 
         self.r_cell_1 = nn.LSTMCell(input_size=1, hidden_size=256)
+
         self.linear_1 = nn.Linear(256, 256)
+        self.linear_2 = nn.Linear(256, 256)
+        self.linear_3 = nn.Linear(256, 256)
 
-        # The reasoning for base*2*2 is as follows
-        # we have base equal to the number of characters in our problem, e.g.
-        # base=4 means our input space is A B C D
-        # we need two additional outputs for WRITE or NOT WRITE
-        # so we have, e.g., A+WRITE
-        # and we also now need the direction to traverse the tape
-        # so LEFT or RIGHT
-        # thus, for example A+WRITE+LEFT
-        # or C+NOT WRITE+RIGHT
-        # which gives us base*2*2 possibilities for outputs
-        # e.g. in the 4*2*2 in the above example = 16
-        # A WRITE LEFT, A WRITE RIGHT, A NOT WRITE LEFT, A NOT WRITE RIGHT
-        # B WRITE LEFT, B WRITE RIGHT, B NOT WRITE LEFT, B NOT WRITE RIGHT
-        # C WRITE LEFT, C WRITE RIGHT, C NOT WRITE LEFT, C NOT WRITE RIGHT
-        # D WRITE LEFT, D WRITE RIGHT, D NOT WRITE LEFT, D NOT WRITE RIGHT
-
-        self.output_1 = nn.Linear(256, base*2*2)
+        self.output_1 = nn.Linear(256, 2)
+        self.output_2 = nn.Linear(256, 2)
+        self.output_3 = nn.Linear(256, base)
 
     def reset_hidden_state(self):
         self.h_0 = torch.zeros(1, 256)
@@ -69,7 +59,7 @@ class SimplePolicyGradient(torch.nn.Module):
         self.h_0 = h_1
         self.c_0 = c_1
 
-        return self.output_1(torch.tanh(self.linear_1(h_1)))
+        return self.output_1(torch.tanh(self.linear_1(h_1))), self.output_2(torch.tanh(self.linear_2(h_1))), self.output_3(torch.tanh(self.linear_3(h_1)))
 
 n = SimplePolicyGradient()
 
@@ -82,8 +72,8 @@ except FileNotFoundError:
 lr = 1e-4
 opt = optim.Adam(n.parameters(), lr=lr)
 batch_size = 32
-epochs = 4096
-render = False
+epochs = 1024
+render = True
 
 def reward_to_go(rews):
     n = len(rews)
@@ -92,15 +82,6 @@ def reward_to_go(rews):
         rtgs[i] = rews[i] + (rtgs[i+1] if i+1 < n else 0)
     return rtgs
 
-def encode(letter, write, direction):
-    return (letter * 4) + write + (direction * 2) - 1
-
-NOT_WRITE = 1
-WRITE = 2
-
-LEFT = 0
-RIGHT = 1
-
 ENCODE_DICT = {}
 DECODE_DICT = {}
 
@@ -108,36 +89,39 @@ for i, c in enumerate(charmap):
     if c == ' ':
         continue
 
-    vec = np.zeros(base*2*2)
-    idx = encode(i, NOT_WRITE, LEFT)
-    vec[idx] = 1
-    ENCODE_DICT[idx] = vec
-    DECODE_DICT[idx] = (i, NOT_WRITE, LEFT)
+    vec = np.zeros(base)
+    vec[i] = 1
+    ENCODE_DICT[i] = vec
+    DECODE_DICT[i] = c
 
-    vec = np.zeros(base*2*2)
-    idx = encode(i, WRITE, LEFT)
-    vec[idx] = 1
-    ENCODE_DICT[idx] = vec
-    DECODE_DICT[idx] = (i, WRITE, LEFT)
+mean_returns = []
+prev_mean = 0.0
+skip = 2
 
-    vec = np.zeros(base*2*2)
-    idx = encode(i, NOT_WRITE, RIGHT)
-    vec[idx] = 1
-    ENCODE_DICT[idx] = vec
-    DECODE_DICT[idx] = (i, NOT_WRITE, RIGHT)
-
-    vec = np.zeros(base*2*2)
-    idx = encode(i, WRITE, RIGHT)
-    vec[idx] = 1
-    ENCODE_DICT[idx] = vec
-    DECODE_DICT[idx] = (i, WRITE, RIGHT)
+# plt.ion()
+# fig, ax = plt.subplots()
+# ax.set_xlim(left=0, right=epochs+skip)
 
 for i in range(epochs):
+    # if i % skip == 0 and len(mean_returns) > 0:
+    #     print('*'*16, f'Mean Returns: {np.mean(mean_returns)}', '*'*16)
+    #     line1, = ax.plot([max(i-skip, 0), i], [prev_mean, np.mean(mean_returns)], 'bo-', linewidth=2, markersize=2)
+    #     fig.canvas.draw()
+    #     prev_mean = np.mean(mean_returns)
+    #     mean_returns = []
+
     print(f"Epoch {i} of {epochs}: {i/epochs*100:.2f}% ", end="")
+
+    # """Sets the learning rate to the initial LR decayed by 10 every 2048 epochs"""
+    # lr = lr * (0.1 ** (i // 1024))
+    # for param_group in opt.param_groups:
+    #     param_group['lr'] = lr
 
     batch_observations = []
     batch_actions = []
-    batch_log_probs = []
+    batch_log_probs_inp = []
+    batch_log_probs_out = []
+    batch_log_probs_pred = []
     batch_targets = []
     batch_weights = []
     batch_episode_returns = []
@@ -148,28 +132,33 @@ for i in range(epochs):
 
     while True:
 
-        if render or i % 128 == 0:
+        if render:
             env.render()
 
         n.eval()
         observation = torch.FloatTensor([observation]).view(-1, 1)
         batch_observations.append(observation)
         
-        logits = n(observation)
-        d = dist.Multinomial(logits=logits)
-        action = d.sample()
+        inp_logits, out_logits, pred_logits = n(observation)
 
-        batch_log_probs.append(d.log_prob(action))
+        inp_dist = dist.Multinomial(logits=inp_logits)
+        out_dist = dist.Multinomial(logits=out_logits)
+        pred_dist = dist.Multinomial(logits=pred_logits)
 
-        pred, out_act, inp_act = DECODE_DICT[action.argmax().item()]
-        out_act -= 1
+        inp_action = inp_dist.sample()
+        out_action = out_dist.sample()
+        pred_action = pred_dist.sample()
 
-        observation, reward, done, info = env.step((inp_act, out_act, pred))
+        batch_log_probs_inp.append(inp_dist.log_prob(inp_action))
+        batch_log_probs_out.append(out_dist.log_prob(out_action))
+        batch_log_probs_pred.append(pred_dist.log_prob(pred_action))
 
-        if render or i % 128 == 0:
-            print(f'Prediction: {charmap[pred]} Observation: {charmap[observation]}')
+        inp = np.argmax(inp_action).item()
+        out = np.argmax(out_action).item()
+        pred = np.argmax(pred_action).item()
 
-        batch_actions.append(action)
+        observation, reward, done, info = env.step((inp, out, pred))
+
         episode_rewards.append(reward)
 
         if done:
@@ -195,15 +184,21 @@ for i in range(epochs):
 
     batch_weights = torch.Tensor(batch_weights)
 
-    batch_loss = torch.cat(batch_log_probs) * batch_weights
-    policy_loss = -batch_loss.mean()
+    inp_batch_loss = torch.cat(batch_log_probs_inp) * batch_weights
+    inp_policy_loss = -inp_batch_loss.mean()
 
-    # prediction_ce_loss = 0 # -nn.functional.cross_entropy(batch_actions_predictions, batch_actions_targets, reduction='mean')
-    # print(f"policy loss: {policy_loss:.2f} prediction ce loss: {prediction_ce_loss:.2f} ", end='')
+    out_batch_loss = torch.cat(batch_log_probs_out) * batch_weights
+    out_policy_loss = -out_batch_loss.mean()
 
-    loss = policy_loss# + prediction_ce_loss
+    pred_batch_loss = torch.cat(batch_log_probs_pred) * batch_weights
+    pred_policy_loss = -pred_batch_loss.mean()
+
+    loss = inp_policy_loss + out_policy_loss + pred_policy_loss
     loss.backward()
-    print(f"total loss: {loss:.2f} return: {np.mean(batch_episode_returns):.2f} episode length: {np.mean(batch_episode_lengths):.2f}")
+
+    mean_return = np.mean(batch_episode_returns)
+    mean_returns.append(mean_return)
+    print(f"total loss: {loss:.2f} return: {mean_return:.2f} episode length: {np.mean(batch_episode_lengths):.2f}")
 
     opt.step()
 

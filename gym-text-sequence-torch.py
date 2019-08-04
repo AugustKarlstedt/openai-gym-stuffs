@@ -26,8 +26,26 @@ class ValueFunctionNetwork(torch.nn.Module):
     def __init__(self):
         super().__init__()
 
+        self.h_0 = torch.zeros(1, 16)
+        self.c_0 = torch.zeros(1, 16)
+
+        self.r_cell_1 = nn.LSTMCell(input_size=1, hidden_size=16)
+
+        self.linear_1 = nn.Linear(16, 16)
+
+        self.output_1 = nn.Linear(16, 1)
+
+    def reset_hidden_state(self):
+        self.h_0 = torch.zeros(1, 16)
+        self.c_0 = torch.zeros(1, 16)
+
     def forward(self, *input):
-        return input
+        h_1, c_1 = self.r_cell_1(input[0], (self.h_0, self.c_0))
+
+        self.h_0 = h_1
+        self.c_0 = c_1
+
+        return self.output_1(torch.tanh(self.linear_1(h_1)))
 
 v = ValueFunctionNetwork()
 
@@ -69,11 +87,19 @@ try:
 except FileNotFoundError:
     pass
 
+try:
+    model = torch.load('gym-copy-torch-v-model.pt')()
+    v.load_state_dict(model)
+except FileNotFoundError:
+    pass
+
 lr = 1e-4
 opt = optim.Adam(n.parameters(), lr=lr)
 batch_size = 32
-epochs = 1024
-render = True
+epochs = 4096
+render = False
+
+v_opt = optim.Adam(v.parameters(), lr=lr)
 
 def reward_to_go(rews):
     n = len(rews)
@@ -96,19 +122,19 @@ for i, c in enumerate(charmap):
 
 mean_returns = []
 prev_mean = 0.0
-skip = 2
+skip = 8
 
-# plt.ion()
-# fig, ax = plt.subplots()
-# ax.set_xlim(left=0, right=epochs+skip)
+plt.ion()
+fig, ax = plt.subplots()
+ax.set_xlim(left=0, right=epochs+skip)
 
 for i in range(epochs):
-    # if i % skip == 0 and len(mean_returns) > 0:
-    #     print('*'*16, f'Mean Returns: {np.mean(mean_returns)}', '*'*16)
-    #     line1, = ax.plot([max(i-skip, 0), i], [prev_mean, np.mean(mean_returns)], 'bo-', linewidth=2, markersize=2)
-    #     fig.canvas.draw()
-    #     prev_mean = np.mean(mean_returns)
-    #     mean_returns = []
+    if i % skip == 0 and len(mean_returns) > 0:
+        print('*'*16, f'Mean Returns: {np.mean(mean_returns)}', '*'*16)
+        line1, = ax.plot([max(i-skip, 0), i], [prev_mean, np.mean(mean_returns)], 'bo-', linewidth=2, markersize=2)
+        fig.canvas.draw()
+        prev_mean = np.mean(mean_returns)
+        mean_returns = []
 
     print(f"Epoch {i} of {epochs}: {i/epochs*100:.2f}% ", end="")
 
@@ -126,6 +152,7 @@ for i in range(epochs):
     batch_weights = []
     batch_episode_returns = []
     batch_episode_lengths = []
+    batch_return_pred = []
 
     episode_rewards = []
     observation = env.reset()
@@ -157,6 +184,10 @@ for i in range(epochs):
         out = np.argmax(out_action).item()
         pred = np.argmax(pred_action).item()
 
+        v.eval()
+        pred_avg_return = v(observation)
+        batch_return_pred.append(pred_avg_return)
+
         observation, reward, done, info = env.step((inp, out, pred))
 
         episode_rewards.append(reward)
@@ -175,31 +206,49 @@ for i in range(epochs):
             done = False
             episode_rewards = []
             n.reset_hidden_state()
+            v.reset_hidden_state()
 
             if len(batch_observations) > batch_size:
                 break
             
+    v.train()
+    v_opt.zero_grad()
+
+    batch_weights = torch.tensor(batch_weights)
+    batch_return_pred = torch.tensor(batch_return_pred, requires_grad=True)
+
+    v_loss = torch.sqrt(nn.functional.mse_loss(batch_return_pred, batch_weights))
+    v_loss.backward()
+    v_opt.step()
+
     n.train()
     opt.zero_grad()
 
-    batch_weights = torch.Tensor(batch_weights)
+    baseline = torch.mean(batch_return_pred)
 
     inp_batch_loss = torch.cat(batch_log_probs_inp) * batch_weights
-    inp_policy_loss = -inp_batch_loss.mean()
+    inp_policy_loss = -inp_batch_loss.mean()# - baseline
 
     out_batch_loss = torch.cat(batch_log_probs_out) * batch_weights
-    out_policy_loss = -out_batch_loss.mean()
+    out_policy_loss = -out_batch_loss.mean()# - baseline
 
     pred_batch_loss = torch.cat(batch_log_probs_pred) * batch_weights
-    pred_policy_loss = -pred_batch_loss.mean()
+    pred_policy_loss = -pred_batch_loss.mean()# - baseline
 
     loss = inp_policy_loss + out_policy_loss + pred_policy_loss
     loss.backward()
 
+    opt.step()
+    
+    batch_return_pred = []
+
     mean_return = np.mean(batch_episode_returns)
     mean_returns.append(mean_return)
-    print(f"total loss: {loss:.2f} return: {mean_return:.2f} episode length: {np.mean(batch_episode_lengths):.2f}")
+    print(f"v function loss: {v_loss:.2f} total loss: {loss:.2f} return: {mean_return:.2f} episode length: {np.mean(batch_episode_lengths):.2f}")
 
-    opt.step()
+
+
 
 torch.save(n.state_dict, './gym-copy-torch-model.pt')
+
+plt.show(block=True)

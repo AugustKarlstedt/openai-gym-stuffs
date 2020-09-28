@@ -41,7 +41,7 @@ lr = 1e-2
 opt = optim.Adam(n.parameters(), lr=lr)
 batch_size = 4096
 epochs = 128
-render = False
+render = True
 
 for i in range(epochs):
     print(f"Epoch {i} of {epochs}: {i/epochs*100:.2f}% ", end="")

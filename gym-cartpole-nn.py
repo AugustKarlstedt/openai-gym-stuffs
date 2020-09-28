@@ -23,38 +23,38 @@ model.compile(loss='mean_squared_error',
               optimizer=Adam(lr=learning_rate))
 
 for i in range(1000):
-        print(f"{i/1000*100:.2f}% ", end="")
+    print(f"{i/1000*100:.2f}% ", end="")
 
-        observation = env.reset()
-        done = False
+    observation = env.reset()
+    done = False
 
-        explore_rate =  max(np.exp(-i*0.01), 0.01)
-        print(explore_rate)
+    explore_rate = max(np.exp(-i*0.01), 0.01)
+    print(explore_rate)
 
-        episode_length = 1
-        while not done:
-                env.render()
+    episode_length = 1
+    while not done:
+        #env.render()
 
-                x = np.reshape(observation, (1, 4))
-                Q = model.predict(x)
-                
-                if np.random.rand() <= explore_rate:
-                        action = env.action_space.sample()
-                else:
-                        action = np.argmax(Q)
+        x = np.reshape(observation, (1, 4))
+        Q = model.predict(x)
 
-                observation, reward, done, info = env.step(action)
+        if np.random.rand() <= explore_rate:
+            action = env.action_space.sample()
+        else:
+            action = np.argmax(Q)
 
-                if not done:
-                        x_next = np.reshape(observation, (1, 4))
-                        Q_next = model.predict(x=x_next)
-                        target = reward + discount_factor * np.amax(Q_next)
-                else:
-                        print('Done! Episode length:', episode_length)
-                        target = reward
-                        
-                Q[0, action] = target
+        observation, reward, done, info = env.step(action)
 
-                model.fit(x=x, y=Q, epochs=1, verbose=0)
+        if not done:
+            x_next = np.reshape(observation, (1, 4))
+            Q_next = model.predict(x=x_next)
+            target = reward + discount_factor * np.amax(Q_next)
+        else:
+            print('Done! Episode length:', episode_length)
+            target = reward
 
-                episode_length += 1
+        Q[0, action] = target
+
+        model.fit(x=x, y=Q, epochs=1, verbose=0)
+
+        episode_length += 1
